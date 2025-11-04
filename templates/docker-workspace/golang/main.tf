@@ -49,6 +49,8 @@ resource "coder_agent" "dev" {
   arch = "amd64"
   dir = "/home/workspace"
 
+  startup_script = templatefile("${path.module}/scripts/install-theme.sh", {})
+
   startup_script_behavior = "non-blocking"
 
   # Handy dashboard telemetry
@@ -91,14 +93,6 @@ resource "coder_agent" "dev" {
     interval     = 10
     timeout      = 1
   }
-}
-
-resource "coder_script" "oh_my_posh" {
-  agent_id           = coder_agent.dev.id
-  display_name       = "Setup Oh My Posh"
-  run_on_start       = true
-  start_blocks_login = true
-  script             = templatefile("${path.module}/scripts/install-theme.sh", {})
 }
 
 # resource "coder_script" "vscode_exts" {

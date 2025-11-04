@@ -50,13 +50,7 @@ resource "coder_agent" "dev" {
   arch = "amd64"
   dir = "/home/workspace"
 
-  # startup_script = <<-EOF
-  #   #!/bin/sh
-  #   set -eux
-  #   # lightweight code-server install + run
-  #   curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=/tmp/code-server
-  #   /tmp/code-server/bin/code-server --auth none --port 13337 &
-  # EOF
+  startup_script = templatefile("${path.module}/scripts/install-theme.sh", {})
 
   startup_script_behavior = "non-blocking"
 
@@ -102,13 +96,23 @@ resource "coder_agent" "dev" {
   }
 }
 
-resource "coder_script" "oh_my_posh" {
-  agent_id           = coder_agent.dev.id
-  display_name       = "Setup Oh My Posh"
-  run_on_start       = true
-  start_blocks_login = true
-  script             = templatefile("${path.module}/scripts/install-theme.sh", {})
+resource "coder_script" "pnpm_install" {
+  agent_id     = coder_agent.dev.id
+  display_name = "Install pnpm"
+  depends_on   = [module.code-server]
+  run_on_start = true
+
+  script = templatefile("${path.module}/scripts/install-pnpm.sh", {})
 }
+
+# resource "coder_script" "vscode_extensions" {
+#   agent_id     = coder_agent.dev.id
+#   display_name = "Install VS Code extensions"
+#   depends_on   = [module.code-server]
+#   run_on_start = true
+
+#   script = templatefile("${path.module}/scripts/install-vscode-exts.sh", {})
+# }
 
 resource "docker_volume" "home" {
   name = "coder-${local.ws_id}-home"
