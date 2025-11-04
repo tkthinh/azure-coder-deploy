@@ -1,0 +1,35 @@
+# /etc/coder.d/coder.yaml
+networking:
+    accessURL: https://mydomain.com
+    wildcardAccessURL: '*.mydomain.com'
+    secureAuthCookie: true
+    browserOnly: false # Allows CLI/SSH access
+
+    # Use built-in HTTP server and configure nginx as a reverse proxy
+    http:
+        httpAddress: '0.0.0.0:80'
+
+    # Use built-in TLS server (optional if using nginx or another reverse proxy)
+    # tls:
+    #     enable: true # Enable built-in TLS
+    #     address: ':443' # Bind to 443
+    #     certFile: /etc/coder.d/cert/fullchain.pem # Path to cert
+    #     keyFile: /etc/coder.d/cert/privkey.pem # Path to key
+
+    derp:
+        enable: true
+        regionID: 1001
+        regionCode: sg
+        regionName: 'Azure-SG DERP'
+        stunAddresses:
+            - 'stun.l.google.com:19302'
+            - 'stun1.l.google.com:19302'
+        blockDirect: false
+
+postgresURL: 'postgresql://user:<password>@mydb.com/coder?sslmode=require' # Replace user/password/dbname
+
+# Best practices additions
+introspection:
+    logging:
+        jsonPath: /var/log/coder/coder.json # Structured logs for monitoring
+        humanPath: /dev/stdout # Human-readable to console

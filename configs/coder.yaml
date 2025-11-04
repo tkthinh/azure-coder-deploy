@@ -1,0 +1,29 @@
+networking:
+    accessURL: https://mydomain.com
+    http:
+        httpAddress: 0.0.0.0:80
+        sessionDuration: 24h
+        proxyHealthInterval: 1m
+    # Bind to all interfaces so it’s reachable via VM’s DNS/IP
+    tls:
+        enable: true
+        address: 0.0.0.0:443
+        certFiles:
+            - /etc/coder/certs/fullchain.pem
+        keyFiles:
+            - /etc/coder/certs/privkey.pem
+    # Optional security
+    secureAuthCookie: true
+    browserOnly: false
+
+    # ======== Embedded DERP (relay) configuration ========
+    derp:
+        enable: true
+        regionID: 1001
+        regionCode: sg
+        regionName: 'Azure-SG DERP'
+        stunAddresses:
+            - 'stun.l.google.com:19302'
+            - 'stun1.l.google.com:19302'
+        # You could later expand this JSON map for multi-region relays
+        blockDirect: false
