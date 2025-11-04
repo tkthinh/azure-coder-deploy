@@ -37,7 +37,7 @@ locals {
   image        = "node:24-trixie"
   ws_id        = data.coder_workspace.me.id
   ws_name      = lower(data.coder_workspace.me.name)
-  project_root = "/home/node/project"
+  project_root = "/home"
 
   repo_url             = trim(data.coder_parameter.repo_url.value, " ")
   placeholder_repo_url = "https://github.com/tkthinh/empty.git"
@@ -48,6 +48,7 @@ locals {
 resource "coder_agent" "dev" {
   os   = "linux"
   arch = "amd64"
+  dir = "/home/workspace"
 
   # startup_script = <<-EOF
   #   #!/bin/sh
@@ -101,6 +102,14 @@ resource "coder_agent" "dev" {
   }
 }
 
+resource "coder_script" "oh_my_posh" {
+  agent_id           = coder_agent.dev.id
+  display_name       = "Setup Oh My Posh"
+  run_on_start       = true
+  start_blocks_login = true
+  script             = templatefile("${path.module}/scripts/install-theme.sh", {})
+}
+
 resource "docker_volume" "home" {
   name = "coder-${local.ws_id}-home"
 }
@@ -117,7 +126,7 @@ resource "docker_container" "workspace" {
 
   volumes {
     volume_name    = docker_volume.home.name
-    container_path = "/home/node"
+    container_path = "/home"
   }
 }
 
@@ -140,4 +149,5 @@ module "git-clone" {
   # Where to clone
   base_dir = local.project_root
   url      = local.effective_repo_url
+  folder_name = "workspace"
 }

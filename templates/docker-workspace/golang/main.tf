@@ -36,7 +36,7 @@ locals {
   image        = "golang:1.25.3-trixie"
   ws_id        = data.coder_workspace.me.id
   ws_name      = lower(data.coder_workspace.me.name)
-  project_root = "/home/golang/project"
+  project_root = "/home"
 
   repo_url             = trim(data.coder_parameter.repo_url.value, " ")
   placeholder_repo_url = "https://github.com/tkthinh/empty.git"
@@ -47,14 +47,7 @@ locals {
 resource "coder_agent" "dev" {
   os   = "linux"
   arch = "amd64"
-
-  # startup_script = <<-EOF
-  #   #!/bin/sh
-  #   set -eux
-  #   # lightweight code-server install + run
-  #   curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=/tmp/code-server
-  #   /tmp/code-server/bin/code-server --auth none --port 13337 &
-  # EOF
+  dir = "/home/workspace"
 
   startup_script_behavior = "non-blocking"
 
@@ -100,6 +93,25 @@ resource "coder_agent" "dev" {
   }
 }
 
+resource "coder_script" "oh_my_posh" {
+  agent_id           = coder_agent.dev.id
+  display_name       = "Setup Oh My Posh"
+  run_on_start       = true
+  start_blocks_login = true
+  script             = templatefile("${path.module}/scripts/install-theme.sh", {})
+}
+
+# resource "coder_script" "vscode_exts" {
+#   agent_id             = coder_agent.dev.id
+#   display_name         = "Install VS Code Desktop extensions"
+#   run_on_start         = true
+#   start_blocks_login   = false 
+#   script               = file("${path.module}/scripts/install-vscode-exts.sh")
+#   # Optional ordering if you rely on other scripts first:
+#   # depends_on         = [coder_script.oh_my_posh]
+# }
+
+
 resource "docker_volume" "home" {
   name = "coder-${local.ws_id}-home"
 }
@@ -116,7 +128,7 @@ resource "docker_container" "workspace" {
 
   volumes {
     volume_name    = docker_volume.home.name
-    container_path = "/home/golang"
+    container_path = "/home"
   }
 }
 
@@ -139,4 +151,5 @@ module "git-clone" {
   # Where to clone
   base_dir = local.project_root
   url      = local.effective_repo_url
+  folder_name = "workspace"
 }
