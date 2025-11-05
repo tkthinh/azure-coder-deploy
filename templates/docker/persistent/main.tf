@@ -13,15 +13,8 @@ locals {
   username = data.coder_workspace_owner.me.name
 }
 
-variable "docker_socket" {
-  default     = ""
-  description = "(Optional) Docker socket URI"
-  type        = string
-}
-
 provider "docker" {
-  # Defaulting to null if the variable is an empty string lets us have an optional variable without having to set our own default
-  host = var.docker_socket != "" ? var.docker_socket : null
+  # host = "unix:///var/run/docker.sock"
 }
 
 data "coder_provisioner" "me" {}
@@ -130,7 +123,6 @@ module "code-server" {
   version = "~> 1.0"
 
   agent_id   = coder_agent.main.id
-  agent_name = "main"
   order      = 1
 }
 

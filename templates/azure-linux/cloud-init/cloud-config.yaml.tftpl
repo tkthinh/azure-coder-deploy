@@ -1,0 +1,42 @@
+#cloud-config
+hostname: ${hostname}
+
+users:
+  - name: ${username}
+    gecos: Coder
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+
+package_update: true
+
+# Prepare and mount the data disk at LUN 10 -> /home/${username}
+bootcmd:
+  - |
+    set -eux
+    DEV="/dev/disk/azure/scsi1/lun10"
+    # Wait for the Azure disk symlink to appear
+    for i in $(seq 1 60); do [ -e "$DEV" ] && break || sleep 1; done
+    PART="$${DEV}1"
+    if ! blkid "$PART" >/dev/null 2>&1; then
+      parted -s "$DEV" mklabel gpt
+      parted -s "$DEV" mkpart primary ext4 0% 100%
+      mkfs.ext4 -F "$PART"
+    fi
+    mkdir -p /home/${username}
+    UUID=$(blkid -s UUID -o value "$PART")
+    grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /home/${username} ext4 defaults,nofail 0 2" >> /etc/fstab
+    mount -a
+    chown -R ${username}:${username} /home/${username}
+
+write_files:
+  - path: /usr/local/bin/coder-init.sh
+    owner: ${username}:${username}
+    permissions: '0755'
+    encoding: b64
+    content: ${init_script}
+
+runcmd:
+  # Run the agent install/boot script as the workspace user
+  - [bash, -lc, "sudo -iu ${username} /usr/local/bin/coder-init.sh"]

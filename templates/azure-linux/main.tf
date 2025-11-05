@@ -140,7 +140,6 @@ module "code-server" {
   version = "~> 1.0"
 
   agent_id   = coder_agent.main.id
-  agent_name = "main"
   order      = 1
 }
 
@@ -240,7 +239,7 @@ resource "tls_private_key" "dummy" {
 }
 
 resource "azurerm_linux_virtual_machine" "main" {
-  count               = 1
+  # count               = 1
   name                = "vm"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
@@ -282,12 +281,12 @@ resource "azurerm_virtual_machine_data_disk_attachment" "home" {
 
 # Start the VM when workspace transitions to "start"
 resource "azapi_resource_action" "vm_start" {
-  count       = data.coder_workspace.me.transition == "start" ? 1 : 0
+  count       = data.coder_workspace.me.start_count > 1 ? 1 : 0
   type        = "Microsoft.Compute/virtualMachines@2023-07-01"
   resource_id = azurerm_linux_virtual_machine.main.id
   action      = "start"
   method      = "POST"
-  depends_on  = [azurerm_linux_virtual_machine.main]
+  depends_on  = [azurerm_virtual_machine_data_disk_attachment.home]
 }
 
 # Deallocate (stop billing for compute) when workspace transitions to "stop"
@@ -306,7 +305,7 @@ resource "coder_metadata" "workspace_info" {
 
   item {
     key   = "type"
-    value = azurerm_linux_virtual_machine.main[0].size
+    value = azurerm_linux_virtual_machine.main.size
   }
 }
 

@@ -15,6 +15,8 @@ provider "docker" {
 provider "coder" {}
 
 data "coder_workspace" "me" {}
+data "coder_workspace_owner" "me" {}
+
 
 # --- Text input: Git repository to clone ---
 data "coder_parameter" "repo_url" {
@@ -52,6 +54,13 @@ resource "coder_agent" "dev" {
   startup_script = templatefile("${path.module}/scripts/install-theme.sh", {})
 
   startup_script_behavior = "non-blocking"
+
+  env = {
+    GIT_AUTHOR_NAME     = coalesce(data.coder_workspace_owner.me.full_name, data.coder_workspace_owner.me.name)
+    GIT_AUTHOR_EMAIL    = "${data.coder_workspace_owner.me.email}"
+    GIT_COMMITTER_NAME  = coalesce(data.coder_workspace_owner.me.full_name, data.coder_workspace_owner.me.name)
+    GIT_COMMITTER_EMAIL = "${data.coder_workspace_owner.me.email}"
+  }
 
   # Handy dashboard telemetry
   metadata {
