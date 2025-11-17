@@ -69,6 +69,7 @@ Configure the Azure Network Security Group (NSG) and Virtual Network (VNet) to e
     - Review + create. Wait for deployment (5-10 minutes).
 
 2. **Verify Connectivity from VM**:
+
     - SSH into the VM.
     - Test DNS and connectivity:
         ```bash
@@ -79,52 +80,121 @@ Configure the Azure Network Security Group (NSG) and Virtual Network (VNet) to e
     - If it fails:
         - Ensure the VM and DB are in the same VNet (or peered VNets).
         - Verify the NSG allows outbound TCP 543.
+    - Connect as the Azure admin (server-qualified username) over SSL and create DB/user/grants:
+
+        ```bash
+          # Create database
+          psql "host=$PGHOST port=5432 dbname=postgres user=pgadmin@coder-pg-db sslmode=require" \
+            -c "CREATE DATABASE coder;"
+
+          # Create app user and apply grants inside the 'coder' DB
+          psql "host=$PGHOST port=5432 dbname=coder user=pgadmin@coder-pg-db sslmode=require" \
+            -c "CREATE USER coder_user WITH PASSWORD 'userpw';"
+
+          # You initially granted everything:
+          # psql ".../coder ..." -c "GRANT ALL PRIVILEGES ON DATABASE coder TO coder_user;"
+
+          # Effective minimal grants you finalized:
+          psql "host=$PGHOST port=5432 dbname=coder user=pgadmin@coder-pg-db sslmode=require" \
+            -c "GRANT CONNECT ON DATABASE coder TO coder_user;"
+          psql "host=$PGHOST port=5432 dbname=coder user=pgadmin@coder-pg-db sslmode=require" \
+            -c "GRANT USAGE, CREATE ON SCHEMA public TO coder_user;"
+        ```
 
 ## Step 3: Obtain TLS Certificates with Let’s Encrypt
 
 1. **Generate Certificates**:
-   Use Certbot in standalone mode to get certificates for `yourdomain.com`:
+   Install Nginx + Certbot (Cloudflare plugin): for `yourdomain.com`:
 
     ```bash
-    sudo certbot certonly --standalone -d yourdomain.com
+    sudo apt-get update
+    sudo apt-get install -y nginx certbot python3-certbot-dns-cloudflare
     ```
 
     - Follow prompts (provide email, agree to terms).
     - Certificates are saved to `/etc/letsencrypt/live/yourdomain.com/`.
 
-2. **Copy Certificates for Coder**:
+2. **Store Cloudflare token**:
 
     ```bash
-    sudo mkdir -p /etc/coder/certs
-    sudo cp /etc/letsencrypt/live/yourdomain.com/fullchain.pem /etc/coder/certs/
-    sudo cp /etc/letsencrypt/live/yourdomain.com/privkey.pem /etc/coder/certs/
-    sudo chown coder:coder /etc/coder/certs/fullchain.pem /etc/coder/certs/privkey.pem
-    sudo chmod 644 /etc/coder/certs/fullchain.pem
-    sudo chmod 640 /etc/coder/certs/privkey.pem
+    mkdir -p ~/.secrets/certbot
+    printf "dns_cloudflare_api_token = %s\n" "YOUR_CF_TOKEN" > ~/.secrets/certbot/cloudflare.ini
+    chmod 600 ~/.secrets/certbot/cloudflare.ini
     ```
 
-3. **Set Up Certificate Renewal**:
-   Create a renewal hook to update certs and restart Coder:
+3. **Request wildcard cert (root + wildcard)**:
 
     ```bash
-    sudo mkdir -p /etc/letsencrypt/renewal-hooks/deploy
-    sudo tee /etc/letsencrypt/renewal-hooks/deploy/restart-coder.sh > /dev/null << EOF
-    #!/bin/bash
-    cp /etc/letsencrypt/live/yourdomain.com/fullchain.pem /etc/coder/certs/
-    cp /etc/letsencrypt/live/yourdomain.com/privkey.pem /etc/coder/certs/
-    chown coder:coder /etc/coder/certs/fullchain.pem /etc/coder/certs/privkey.pem
-    chmod 644 /etc/coder/certs/fullchain.pem
-    chmod 640 /etc/coder/certs/privkey.pem
-    systemctl restart coder
-    EOF
-    sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/restart-coder.sh
+    sudo certbot certonly \
+    --dns-cloudflare \
+    --dns-cloudflare-credentials ~/.secrets/certbot/cloudflare.ini \
+    -d coder.mydomain.com -d '*.coder.mydomain.com'
     ```
 
-    Test renewal:
+    Certificates: /etc/letsencrypt/live/coder.mydomain.com/
+
+4. **Nginx reverse proxy to Coder on localhost:3000**:
 
     ```bash
-    sudo certbot renew --dry-run
+    sudo bash -c 'cat >/etc/nginx/sites-available/coder.mydomain.com' <<'NGINX'
     ```
+
+    Config:
+
+    ```bash
+    server {
+    server_name coder.mydomain.com *.coder.mydomain.com;
+
+    listen 80;
+    listen [::]:80;
+    return 301 https://$host$request_uri;
+    }
+
+    server {
+    server_name coder.mydomain.com *.coder.mydomain.com;
+
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+
+    ssl_certificate /etc/letsencrypt/live/coder.mydomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/coder.mydomain.com/privkey.pem;
+
+    location / {
+    proxy_pass http://127.0.0.1:3000
+    ;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
+    }
+    }
+    NGINX
+
+    sudo ln -sf /etc/nginx/sites-available/coder.mydomain.com /etc/nginx/sites-enabled/
+    sudo nginx -t && sudo systemctl reload nginx
+    ```
+
+5. **Certificate/key permissions (Nginx mode)**  
+   Keep Let’s Encrypt defaults; no extra exposure to the `coder` user is required:
+
+-   `fullchain.pem`: typically `0644` root:root
+-   `privkey.pem`: `0600` root:root
+
+6. Renewal hook (reload Nginx when certs renew):
+
+````bash
+sudo mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh > /dev/null << 'EOF'
+#!/bin/bash
+systemctl reload nginx
+EOF
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+sudo certbot renew --dry-run
+```
 
 ## Step 4: Install Coder Server
 
@@ -146,7 +216,7 @@ Configure the Azure Network Security Group (NSG) and Virtual Network (VNet) to e
 
 ## Step 5: Configure Coder with YAML
 
-1. **Create Configuration File**:
+1.1. **Create Configuration File**:
 
     ```bash
     sudo mkdir -p /etc/coder.d
@@ -176,6 +246,28 @@ Configure the Azure Network Security Group (NSG) and Virtual Network (VNet) to e
           - 'stun1.l.google.com:19302'
         blockDirect: false
     EOF
+    ```
+
+1.2. **Create Env File**:
+
+    ```bash
+    sudo mkdir -p /etc/coder.d
+    sudo tee /etc/coder.d/coder.env > /dev/null << EOF
+    CODER_PG_CONNECTION_URL=postgresql://coder_user:${PG_PASSWORD}@coder-pg-db.postgres.database.azure.com/coder?sslmode=require
+    CODER_EXTERNAL_AUTH_0_ID=primary-github
+    CODER_EXTERNAL_AUTH_0_TYPE=github
+    CODER_EXTERNAL_AUTH_0_CLIENT_ID=${GITHUB_CLIENT_ID}
+    CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+
+    ARM_CLIENT_ID=${ARM_CLIENT_ID}
+    ARM_CLIENT_SECRET=${ARM_CLIENT_SECRET}
+    ARM_TENANT_ID=${ARM_TENANT_ID}
+    ARM_SUBSCRIPTION_ID=${ARM_SUBSCRIPTION_ID}
+
+    #CODER_OAUTH2_GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+    #CODER_OAUTH2_GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+    #CODER_OAUTH2_GITHUB_ALLOW_SIGNUPS=true
+    #CODER_OAUTH2_GITHUB_ALLOW_EVERYONE=true
     ```
 
 2. **Set Permissions**:
@@ -247,10 +339,12 @@ WantedBy=multi-user.target
 ````
 
 ## Step 7: Start and Enable Coder Service
+
 1. **Start the Service**:
+
 ```bash
 sudo systemctl start coder
-````
+```
 
 2. **Enable on Boot**:
 

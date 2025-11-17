@@ -16,9 +16,8 @@ data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
 data "coder_provisioner" "me" {}
 
-# Mode: "build" (paste Dockerfile) or "pull" (use registry image)
 data "coder_parameter" "mode" {
-  name        = "image_mode"
+  name        = "_Image Mode"
   description = "Choose how to provide the workspace image"
   type        = "string"
   default     = "build"
@@ -36,17 +35,19 @@ data "coder_parameter" "mode" {
 # PASTED DOCKERFILE (used when mode == build)
 data "coder_parameter" "dockerfile" {
   name        = "Dockerfile"
-  description = "Paste a complete Dockerfile (used only if mode=build)"
+  description = "[BUILD-MODE] Paste a complete Dockerfile"
   type        = "string"
+  # Ensure /home/workspace exists and is owned by the user  # <<<
   default     = <<-EOT
     FROM ubuntu:24.04
     RUN apt-get update && apt-get install -y sudo curl git && rm -rf /var/lib/apt/lists/*
     ARG USER=coder
     RUN useradd --groups sudo --no-create-home --shell /bin/bash $${USER} \
-      && mkdir -p /home/$${USER} && chown -R $${USER}:$${USER} /home/$${USER} \
+      && mkdir -p /home/$${USER} /home/workspace \
+      && chown -R $${USER}:$${USER} /home/$${USER} /home/workspace \
       && echo "$${USER} ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/$${USER} && chmod 0440 /etc/sudoers.d/$${USER}
     USER $${USER}
-    WORKDIR /home/$${USER}
+    WORKDIR /home/workspace
   EOT
 
   validation {
@@ -58,35 +59,34 @@ data "coder_parameter" "dockerfile" {
 # REGISTRY PULL PARAMS (used when mode == pull)
 data "coder_parameter" "image_name" {
   name        = "registry_image"
-  description = "Image reference (e.g., myacr.azurecr.io/team/node:20)"
+  description = "[PULL-MODE] Image reference (e.g., myacr.azurecr.io/team/node:20)"
   type        = "string"
   default     = "ubuntu:24.04"
 }
 
 data "coder_parameter" "registry_address" {
   name        = "registry_address"
-  description = "Registry server address (e.g., myacr.azurecr.io)"
+  description = "[PULL-MODE] Registry server address (e.g., myacr.azurecr.io)"
   type        = "string"
   default     = ""
 }
 
 data "coder_parameter" "registry_username" {
   name        = "registry_username"
-  description = "Registry username (e.g., ACR admin or service principal appId)"
+  description = "[PULL-MODE] Registry username (e.g., ACR admin or service principal appId)"
   type        = "string"
   default     = ""
 }
 
 data "coder_parameter" "registry_password" {
   name        = "registry_password"
-  description = "Registry password/secret"
+  description = "[PULL-MODE] Registry password/secret"
   type        = "string"
   default     = ""
 }
 
 # -------- Providers --------
 provider "docker" {
-  # If pulling from a private registry, pass auth here.
   dynamic "registry_auth" {
     for_each = data.coder_parameter.mode.value == "pull" && length(trimspace(data.coder_parameter.registry_address.value)) > 0 ? [1] : []
     content {
@@ -101,12 +101,9 @@ provider "docker" {
 resource "coder_agent" "main" {
   arch = data.coder_provisioner.me.arch
   os   = "linux"
+  dir = "/home/workspace" 
 
-  startup_script = <<-EOT
-    set -eu
-    curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=/tmp/code-server
-    /tmp/code-server/bin/code-server --auth none --port 13337 >/tmp/code-server.log 2>&1 &
-  EOT
+  startup_script_behavior = "non-blocking"
 
   env = {
     GIT_AUTHOR_NAME     = coalesce(data.coder_workspace_owner.me.full_name, data.coder_workspace_owner.me.name)
@@ -122,28 +119,12 @@ resource "coder_agent" "main" {
     interval     = 10
     timeout      = 1
   }
-
   metadata {
     display_name = "RAM Usage"
     key          = "1_ram"
     script       = "coder stat mem"
     interval     = 10
     timeout      = 1
-  }
-}
-
-resource "coder_app" "code_server" {
-  agent_id     = coder_agent.main.id
-  slug         = "code-server"
-  display_name = "code-server"
-  url          = "http://localhost:13337/?folder=/home/${local.username}"
-  icon         = "/icon/code.svg"
-  subdomain    = false
-  share        = "owner"
-  healthcheck {
-    url       = "http://localhost:13337/healthz"
-    interval  = 5
-    threshold = 6
   }
 }
 
@@ -154,8 +135,6 @@ resource "docker_volume" "home" {
 }
 
 # -------- Build or Pull the image --------
-
-# If mode=build: materialize the pasted Dockerfile and build it
 resource "local_file" "dockerfile" {
   count    = data.coder_parameter.mode.value == "build" ? 1 : 0
   filename = "${path.module}/build/Dockerfile"
@@ -170,7 +149,6 @@ data "docker_registry_image" "upstream" {
 resource "docker_image" "workspace" {
   name = data.coder_parameter.mode.value == "pull" ? data.coder_parameter.image_name.value : "coder-${data.coder_workspace.me.id}"
 
-  # BUILD MODE: build from pasted Dockerfile
   dynamic "build" {
     for_each = data.coder_parameter.mode.value == "build" ? [1] : []
     content {
@@ -180,21 +158,16 @@ resource "docker_image" "workspace" {
     }
   }
 
-  # Rebuild when Dockerfile changes (build mode only)
   triggers = data.coder_parameter.mode.value == "build" ? {
     dockerfile_sha1 = sha1(data.coder_parameter.dockerfile.value)
   } : null
 
-  # PULL MODE: when the upstream digest changes, force a pull
   pull_triggers = data.coder_parameter.mode.value == "pull" ? [data.docker_registry_image.upstream[0].sha256_digest] : null
 
   keep_locally = true
-
-  depends_on = [local_file.dockerfile]
+  depends_on   = [local_file.dockerfile]
 }
 
-# When pulling, retag the pulled image name to our stable local name
-# so docker_container uses a consistent reference.
 resource "null_resource" "retag" {
   count = data.coder_parameter.mode.value == "pull" ? data.coder_workspace.me.start_count : 0
 
@@ -219,21 +192,28 @@ resource "docker_container" "workspace" {
   name     = "coder-${data.coder_workspace_owner.me.name}-${lower(data.coder_workspace.me.name)}"
   hostname = data.coder_workspace.me.name
 
-  # Ensure the agent init script resolves host when running inside Docker
-  entrypoint = ["sh", "-c", replace(coder_agent.main.init_script, "/localhost|127\\.0\\.0\\.1/", "host.docker.internal")]
+  # Run the agent exactly like in your Python template  # <<<
+  command = ["sh", "-c", coder_agent.main.init_script]
+  env     = ["CODER_AGENT_TOKEN=${coder_agent.main.token}"]
 
-  env = [
-    "CODER_AGENT_TOKEN=${coder_agent.main.token}",
-  ]
-
-  host {
-    host = "host.docker.internal"
-    ip   = "host-gateway"
-  }
+  # Make Linux host discovery stable (optional but nice to have)
+  # host {
+  #   host = "host.docker.internal"
+  #   ip   = "host-gateway"
+  # }
 
   volumes {
-    container_path = "/home/${local.username}"
+    container_path = "/home"                 # <<< same as Python template
     volume_name    = docker_volume.home.name
     read_only      = false
   }
+}
+
+module "code-server" {
+  count   = data.coder_workspace.me.start_count
+  source  = "registry.coder.com/coder/code-server/coder"
+  version = "~> 1.0"
+
+  agent_id = coder_agent.main.id
+  order    = 1
 }
